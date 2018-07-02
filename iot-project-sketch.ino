@@ -7,9 +7,7 @@
 #include <PubSubClient.h> // Bibioteca do cliente do MQTT
 #include <DHTesp.h> // Bibioteca do sensor de temperatura
 
-#define TOPICO_TEMPERATURA "iot7-temperature"
-#define TOPICO_UMIDADE "iot7-humidity"
-
+#define TOPICO_SENSORES "iot7-ambient" // node do tópico onde devem ser publicados os dados dos sensores
 #define ID_MQTT  "78ea88bc572c47718b6a6e6451d75431adda222"     //identificador da sessão no MQTT
 
 // mapeamento de pinos do NodeMCU
@@ -25,12 +23,13 @@
 #define D9    3
 #define D10   1
 
+
 // WIFI
 const char* SSID = "iot";
 const char* PASSWORD = "netdascoisas#"; 
 
 // MQTT
-const char* BROKER_MQTT = "200.131.219.102";
+const char* BROKER_MQTT = "m2m.eclipse.org";
 int BROKER_PORT = 1883;
 
 WiFiClient espClient; // Cria o objeto espClient
@@ -164,13 +163,15 @@ void loop()
     Serial.println("DHT11 error status: " + String(dht.getStatusString()));
   }
   else {
-    char buff[5], buff2[5];
-    char* temp = dtostrf(newValues.temperature, 4, 1, buff);
-    MQTT.publish(TOPICO_TEMP, temp);
-    
-    char* hum = dtostrf(newValues.humidity, 4, 1, buff2);
-    MQTT.publish(TOPICO_HUM, hum);
+    char buff[5], buff2[5], data[50];
 
+    char* temp = dtostrf(newValues.temperature, 4, 1, buff);    
+    char* hum = dtostrf(newValues.humidity, 4, 1, buff2);
+
+    sprintf(data, "{\"temperature\": %s, \"humidity\": %s}", temp, hum);
+    Serial.println(data);
+
+    MQTT.publish(TOPICO_SENSORES, data);
   }
 
   //keep-alive da comunicação com broker MQTT
