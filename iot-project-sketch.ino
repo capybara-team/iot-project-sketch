@@ -6,6 +6,10 @@
 #include <ESP8266WiFi.h>  // Biblioteca da placa
 #include <PubSubClient.h> // Bibioteca do cliente do MQTT
 #include <DHTesp.h>       // Bibioteca do sensor de temperatura
+#include <Keypad.h>
+#include <ESP8266HTTPClient.h>
+#include <SPI.h>
+#include <MFRC522.h>
 
 #define TOPICO_SENSORES "iot7-ambient"                    // node do tópico onde devem ser publicados os dados dos sensores
 #define ID_MQTT "78ea88bc572c47718b6a6e6451d75431adda222" //identificador da sessão no MQTT
@@ -24,20 +28,55 @@
 #define D10 1
 
 #define TEMPO_ENVIO_DADOS 2000
+#define SENSOR_TEMPERATURA_PINO D4
+
+#define HTTP_SECRET "capivara"
+#define HTTP_AUTH_URL "http://192.168.1.118:3000/arduino/auth/"
+
+#define RST_PIN D1
+#define SS_PIN D2
+
+int potenciaArCondicionado = 2;
 
 // WIFI
-const char *SSID = "iot";
-const char *PASSWORD = "netdascoisas#";
+const char *SSID = "LAB3";
+const char *PASSWORD = "0203634280";
 
 // MQTT
 const char *BROKER_MQTT = "m2m.eclipse.org";
 int BROKER_PORT = 1883;
 
-WiFiClient espClient; // Cria o objeto espClient
-DHTesp dht;
-PubSubClient MQTT(espClient); // Instancia o Cliente MQTT passando o objeto espClient
+// // Keymap
+// const byte ROWS = 4;
+// const byte COLS = 4;
+
+// char keys[ROWS][COLS] = {
+//   {
+//     '1','2','3','A',  }
+//   ,
+//   {
+//     '4','5','6','B',  }
+//   ,
+//   {
+//     '7','8','9','C',  }
+//   ,
+//   {
+//     '*','0','#','D',  }
+// };
+
+// // Pinos do Keymap
+// byte colPins[ROWS] = {
+//   D3, D2, D1, D0}; //connect to the row pinouts of the keypad
+// byte rowPins[COLS] = {
+//   D7, D5, D6, D4}; //connect to the column pinouts of the keypad
+
+WiFiClient espClient;             // Cria o objeto espClient
+DHTesp dht;                       // Instancia do sensor de temperatura
+PubSubClient MQTT(espClient);     // Instancia o Cliente MQTT passando o objeto espClient
+MFRC522 mfrc522(SS_PIN, RST_PIN); //Instancia o cliente do leitor de RFID
 
 //Prototypes
+void initMFRC();
 void initSerial();
 void initWiFi();
 void initMQTT();
@@ -45,6 +84,7 @@ void reconectWiFi();
 void mqtt_callback(char *topic, byte *payload, unsigned int length);
 void VerificaConexoesWiFIEMQTT(void);
 void InitOutput(void);
+void LeituraRFID();
 
 unsigned long tempoUltimoEnvio = 0;
 
@@ -55,9 +95,20 @@ void setup()
     initSerial();
     initWiFi();
     initMQTT();
+    initMFRC();
+    pinMode(D0, OUTPUT);
 
-    dht.setup(16, DHTesp::DHT11);
+    pinMode(D3, OUTPUT);
+    digitalWrite(D0, LOW);
+
+    dht.setup(SENSOR_TEMPERATURA_PINO, DHTesp::DHT11);
     delay(1000);
+}
+
+void initMFRC()
+{
+    SPI.begin();
+    mfrc522.PCD_Init();
 }
 
 //Função: inicializa comunicação serial com baudrate 115200 (para fins de monitorar no terminal serial
@@ -89,6 +140,7 @@ void initWiFi()
 void initMQTT()
 {
     MQTT.setServer(BROKER_MQTT, BROKER_PORT);
+    MQTT.setCallback(callback);
 }
 
 //Função: reconecta-se ao broker MQTT (caso ainda não esteja conectado ou em caso de a conexão cair)
@@ -103,6 +155,8 @@ void reconnectMQTT()
         Serial.println(BROKER_MQTT);
         if (MQTT.connect(ID_MQTT))
         {
+            MQTT.subscribe("iot7-ac");
+            MQTT.subscribe("iot7-alert");
             Serial.println("Conectado com sucesso ao broker MQTT!");
         }
         else
@@ -134,7 +188,7 @@ void reconectWiFi()
 
     Serial.println();
     Serial.print("Conectado com sucesso na rede ");
-    Serial.print(SSID);
+    Serial.println(SSID);
     Serial.println("IP obtido: ");
     Serial.println(WiFi.localIP());
 }
@@ -173,19 +227,122 @@ void EnviaDadosSensores()
     }
 }
 
+bool verificaAcesso(String codigo)
+{
+    HTTPClient http;
+    String url = HTTP_AUTH_URL;
+    url.concat(codigo);
+    
+    Serial.println("Acessando " + url);
+    http.begin(url);
+    http.addHeader("x-arduino-secret", HTTP_SECRET);
+
+    int httpCode = http.GET();
+
+    if (httpCode > 0 && httpCode == HTTP_CODE_OK)
+    {
+        String response = http.getString();
+        
+        Serial.println(codigo + " => " + response);
+        //http.end();
+        if (response == "1")
+            return true;
+    }
+    else
+    {
+        Serial.println("Erro");
+        Serial.println(http.errorToString(httpCode).c_str());
+    }
+
+    return false;
+}
+
+void callback(char *topic, byte *payload, unsigned int length)
+{
+
+    Serial.println(topic);
+    Serial.println((char)payload[0]);
+
+    if (strcmp("iot7-ac", topic) == 0)
+    {
+        if ((char)payload[0] == '1')
+            potenciaArCondicionado = 1;
+        else if ((char)payload[0] == '2')
+            potenciaArCondicionado = 2;
+        else if ((char)payload[0] == '3')
+            potenciaArCondicionado = 3;
+    }
+
+    else if (strcmp("iot7-alert", topic) == 0)
+    {
+        if ((char)payload[0] == '0')
+            digitalWrite(D3, LOW);
+        else if ((char)payload[0] == '1')
+            digitalWrite(D3, HIGH);
+    }
+}
+
+void piscaLuzArCondicionado()
+{
+    int i;
+    for (i = 0; i < potenciaArCondicionado; i++)
+    {
+        digitalWrite(D0, LOW);
+        delay(200);
+        digitalWrite(D0, HIGH);
+        delay(200);
+    }
+}
+
+void LeituraRFID()
+{
+    if (!mfrc522.PICC_IsNewCardPresent()) {
+        delay(100);
+        return;
+    }
+
+    if (!mfrc522.PICC_ReadCardSerial()) {
+        delay(100);
+        return;
+    }
+
+    String content = "";
+    for (byte i = 0; i < mfrc522.uid.size; i++)
+    {
+        //content.concat(String(mfrc522.uid.uidByte[i] < 0x10 ? " 0" : " "));
+        content.concat(String(mfrc522.uid.uidByte[i], HEX));
+    }
+
+    content.toUpperCase();
+
+    Serial.println("Lido o cartão " + content);
+
+    if(verificaAcesso(content))
+        Serial.println("Acesso liberado");
+    else
+        Serial.println("Acesso negado");
+
+    delay(1000);
+}
+
 //programa principal
 void loop()
 {
     //garante funcionamento das conexões WiFi e ao broker MQTT
     VerificaConexoesWiFIEMQTT();
 
-    unsigned long tempoAtual = milis();
+    unsigned long tempoAtual = millis();
 
     if (tempoAtual - tempoUltimoEnvio > TEMPO_ENVIO_DADOS)
     {
         EnviaDadosSensores();
-        tempoUltimoEnvio = milis();
+        tempoUltimoEnvio = millis();
+
+        piscaLuzArCondicionado();
+        //potenciaArCondicionado++;
     }
+
+    LeituraRFID();
     //keep-alive da comunicação com broker MQTT
     MQTT.loop();
 }
